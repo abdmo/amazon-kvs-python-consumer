@@ -1,0 +1,5 @@
+boto3==1.18.41
+ffmpeg-python==0.2.0
+numpy==1.21.2
+opencv-python==4.5.3.56
+
