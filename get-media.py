@@ -19,7 +19,7 @@ HEIGHT = 480
 def get_data_endpoint():
     client = boto3.client("kinesisvideo")
     response = client.get_data_endpoint(
-                            StreamName="fattah-stream-1",
+                            StreamName=STREAM_NAME,
                             APIName="GET_MEDIA"
                             )
     return response["DataEndpoint"]
@@ -84,10 +84,11 @@ if __name__ == "__main__":
         if (cv2.waitKey(1) & 0xFF) == ord("q"):
             break
 
+    cv2.destroyAllWindows()
+
     logger.info("Waiting for write_to_buffer process")
     process.stdin.close()
     process.wait()
     write_t.join()
-    cv2.destroyAllWindows()
     logger.info("Done")
 
