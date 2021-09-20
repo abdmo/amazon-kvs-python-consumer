@@ -1,7 +1,10 @@
 import io
 import logging
-import threading
 import subprocess
+import sys
+import threading
+import time
+from queue import Queue, Empty
 
 import boto3
 import cv2
@@ -9,7 +12,7 @@ import ffmpeg
 import numpy as np
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 
 STREAM_NAME = "fattah-stream-1"
 # TODO: get resolution dynamically. how?
@@ -25,14 +28,18 @@ def get_data_endpoint():
     return response["DataEndpoint"]
 
 def write_bytes_to_buffer(process, payload):
-    for chunk in payload.iter_chunks():
-        stream = io.BytesIO(chunk)
-        process.stdin.write(stream.getvalue())
+    logger.info("Writing bytes to buffer")
+    frame_size = WIDTH * HEIGHT * 3
+    for chunk in payload.iter_chunks(frame_size):
+        process.stdin.write(chunk)
 
-def read_frame_from_buffer(proc, width, height):
-    logger.info("Reading frame")
+    logger.info("No bytes received")
+    is_no_bytes_received.set()
 
-    frame_size = width * height * 3
+def read_frame_from_buffer(proc):
+    frame = None
+    frame_size = WIDTH * HEIGHT * 3
+
     in_bytes = proc.stdout.read(frame_size)
     if len(in_bytes) == 0:
         frame = None
@@ -41,14 +48,32 @@ def read_frame_from_buffer(proc, width, height):
         frame = (
                  np
                  .frombuffer(in_bytes, np.uint8)
-                 .reshape([height, width, 3])
+                 .reshape([HEIGHT, WIDTH, 3])
                 )
     return frame
 
 # TODO: do fancy inference process here
 def process_frame(frame):
-    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    #frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     return frame
+
+def read_and_process_frame(process, frame_q):
+    while True:
+        in_frame = read_frame_from_buffer(process)
+        if in_frame is None:
+            logger.info("End of input stream")
+            break
+
+        out_frame = process_frame(in_frame)
+        frame_q.put_nowait(out_frame)
+
+def safe_exit(payload, process, write_t, read_t):
+    cv2.destroyAllWindows()
+    payload.close()
+    process.stdin.close()
+    process.wait()
+    read_t.join()
+    write_t.join()
 
 if __name__ == "__main__":
     endpoint = get_data_endpoint()
@@ -59,36 +84,36 @@ if __name__ == "__main__":
                         StartSelector=start_selector
                         )
     logger.info(response)
-    # TODO: check if response is successful
     payload = response["Payload"]
 
     process = (
-               ffmpeg
-               .input("pipe:")
-               .video
-               .output("pipe:", format="rawvideo", pix_fmt="bgr24")
-               .run_async(pipe_stdin=True, pipe_stdout=True)
-              )
+        ffmpeg
+        .input("pipe:")
+        .video
+        .output("pipe:", format="rawvideo", pix_fmt="bgr24", video_bitrate=1500)
+        .run_async(pipe_stdin=True, pipe_stdout=True)
+    )
+
+    is_no_bytes_received = threading.Event()
     write_t = threading.Thread(target=write_bytes_to_buffer, args=(process, payload,), daemon=True)
+    frame_q = Queue()
+    read_t = threading.Thread(target=read_and_process_frame, args=(process, frame_q,), daemon=True)
+
     write_t.start()
+    read_t.start()
 
     while True:
-        in_frame = read_frame_from_buffer(process, WIDTH, HEIGHT)
-        if in_frame is None:
-            logger.info("End of input stream")
+        if is_no_bytes_received.is_set():
             break
+        try:
+            out_frame = frame_q.get_nowait()
+        except Empty:
+            pass
+        else:
+            cv2.imshow("out_frame", out_frame)
+            if (cv2.waitKey(1) & 0xFF) == ord("q"):
+                break
 
-        out_frame = process_frame(in_frame)
-
-        cv2.imshow("out_frame", out_frame)
-        if (cv2.waitKey(1) & 0xFF) == ord("q"):
-            break
-
-    cv2.destroyAllWindows()
-
-    logger.info("Waiting for write_to_buffer process")
-    process.stdin.close()
-    process.wait()
-    write_t.join()
+    safe_exit(payload, process, write_t, read_t)
     logger.info("Done")
 
