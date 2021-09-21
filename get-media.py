@@ -4,7 +4,7 @@ import subprocess
 import sys
 import threading
 import time
-from queue import Queue, Empty
+from queue import Queue, Empty, Full
 
 import boto3
 import cv2
@@ -29,11 +29,10 @@ def get_data_endpoint():
 
 def write_bytes_to_buffer(process, payload):
     logger.info("Writing bytes to buffer")
-    frame_size = WIDTH * HEIGHT * 3
-    for chunk in payload.iter_chunks(frame_size):
+    for chunk in payload.iter_chunks():
         process.stdin.write(chunk)
 
-    logger.info("No bytes received")
+    logger.info("No bytes received. Triggering exit signal")
     is_no_bytes_received.set()
 
 def read_frame_from_buffer(proc):
@@ -61,11 +60,14 @@ def read_and_process_frame(process, frame_q):
     while True:
         in_frame = read_frame_from_buffer(process)
         if in_frame is None:
-            logger.info("End of input stream")
+            logger.info("End of input stream. Ending stream")
             break
 
         out_frame = process_frame(in_frame)
-        frame_q.put_nowait(out_frame)
+        try:
+            frame_q.put(out_frame, timeout=1)
+        except Full:
+            logger.warn("Queue is full")
 
 def safe_exit(payload, process, write_t, read_t):
     cv2.destroyAllWindows()
@@ -106,9 +108,9 @@ if __name__ == "__main__":
         if is_no_bytes_received.is_set():
             break
         try:
-            out_frame = frame_q.get_nowait()
+            out_frame = frame_q.get(timeout=1)
         except Empty:
-            pass
+            logger.warn("Queue is empty")
         else:
             cv2.imshow("out_frame", out_frame)
             if (cv2.waitKey(1) & 0xFF) == ord("q"):
@@ -116,4 +118,3 @@ if __name__ == "__main__":
 
     safe_exit(payload, process, write_t, read_t)
     logger.info("Done")
-
