@@ -67,7 +67,7 @@ def read_and_process_frame(process, frame_q):
         try:
             frame_q.put(out_frame, timeout=1)
         except Full:
-            logger.warn("Queue is full")
+            logger.warning("Queue is full")
 
 def safe_exit(payload, process, write_t, read_t):
     cv2.destroyAllWindows()
@@ -98,6 +98,10 @@ if __name__ == "__main__":
 
     is_no_bytes_received = threading.Event()
     write_t = threading.Thread(target=write_bytes_to_buffer, args=(process, payload,), daemon=True)
+
+    # Calling cv2.imshow in a child thread gives me a weird error
+    # so I had to return the frames to the main thread
+    # to use/display them, hence the usage of queue
     frame_q = Queue()
     read_t = threading.Thread(target=read_and_process_frame, args=(process, frame_q,), daemon=True)
 
@@ -110,7 +114,7 @@ if __name__ == "__main__":
         try:
             out_frame = frame_q.get(timeout=1)
         except Empty:
-            logger.warn("Queue is empty")
+            logger.warning("Queue is empty")
         else:
             cv2.imshow("out_frame", out_frame)
             if (cv2.waitKey(1) & 0xFF) == ord("q"):
